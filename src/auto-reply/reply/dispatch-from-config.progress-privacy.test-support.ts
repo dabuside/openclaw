@@ -12,6 +12,49 @@ import { buildTestCtx } from "./test-ctx.js";
 // Registered inside the existing dispatch suite so privacy and routing share its mock graph.
 export function registerProgressPrivacyTests() {
   it.each([
+    { name: "automatic", mode: "automatic" as const, sendPolicy: "allow" as const, visible: true },
+    {
+      name: "message tool only",
+      mode: "message_tool_only" as const,
+      sendPolicy: "allow" as const,
+      visible: false,
+    },
+    { name: "denied", mode: "automatic" as const, sendPolicy: "deny" as const, visible: false },
+  ])(
+    "gates an admitted preview receipt for $name delivery",
+    async ({ mode, sendPolicy, visible }) => {
+      setNoAbort();
+      sessionStoreMocks.currentEntry = { sessionId: "s1", updatedAt: 0, sendPolicy };
+      const onPreviewStart = vi.fn(() => false);
+      const onPreparedAgentRunStart = vi.fn(() => "reply-dispatch");
+      const dispatcher = createDispatcher();
+      const result = await dispatchReplyFromConfig({
+        ctx: buildTestCtx({
+          Provider: "telegram",
+          Surface: "telegram",
+          ChatType: "direct",
+          From: "telegram:123",
+          SessionKey: "agent:main:telegram:dm:123",
+        }),
+        cfg: { ...automaticGroupReplyConfig, session: { sendPolicy: { default: sendPolicy } } },
+        dispatcher,
+        replyOptions: { sourceReplyDeliveryMode: mode, onPreviewStart, onPreparedAgentRunStart },
+        replyResolver: async (_ctx, options) => {
+          expect(onPreviewStart).not.toHaveBeenCalled();
+          expect(
+            options?.onPreparedAgentRunStart?.({ runId: "receipt-run", transcriptStart: null }),
+          ).toBe("reply-dispatch");
+          await options?.onPreviewStart?.();
+          return { text: "Completed" } satisfies ReplyPayload;
+        },
+      });
+      expect(result.sendPolicyDenied ?? false).toBe(sendPolicy === "deny");
+      expect(onPreparedAgentRunStart).toHaveBeenCalledOnce();
+      expect(onPreviewStart).toHaveBeenCalledTimes(visible ? 2 : 0);
+    },
+  );
+
+  it.each([
     { surface: "telegram", mentioned: false },
     { surface: "telegram", mentioned: true },
     { surface: "discord", mentioned: false },

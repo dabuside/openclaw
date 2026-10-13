@@ -5,7 +5,7 @@ const DEFAULT_TASK_TIMEOUT_MS = 5 * 60 * 1000;
 
 interface SequentialQueueOptions {
   /** Default five-minute cap; nonpositive/nonfinite values preserve unbounded FIFO ordering. */
-  taskTimeoutMs?: number;
+  taskTimeoutMs?: number | (() => number);
   /** Timed-out tasks keep running, but stop blocking later same-key tasks (#70133). */
   onTaskTimeout?: (key: string, timeoutMs: number) => void;
 }
@@ -17,7 +17,13 @@ export function createSequentialQueue(options: SequentialQueueOptions = {}) {
 
   return (key: string, task: () => Promise<void>): Promise<void> => {
     const previous = queues.get(key) ?? Promise.resolve();
-    const wrapped = () => boundedRun(key, task, taskTimeoutMs, onTaskTimeout);
+    const wrapped = () =>
+      boundedRun(
+        key,
+        task,
+        typeof taskTimeoutMs === "function" ? taskTimeoutMs() : taskTimeoutMs,
+        onTaskTimeout,
+      );
     const next = previous.then(wrapped, wrapped);
     queues.set(key, next);
     const cleanup = () => {

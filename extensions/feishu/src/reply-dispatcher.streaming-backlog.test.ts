@@ -60,7 +60,10 @@ async function runStreamingTurn(queuedPreviews: string[], signal: AbortSignal) {
           result = { code: 0, data: { card_id: "owned-card" } };
         } else if (method === "POST" && path === "/open-apis/im/v1/messages") {
           result = { code: 0, data: { message_id: "om_owned_stream", chat_id: "oc_owned_chat" } };
-        } else if (method === "PUT" && path.endsWith("/elements/content/content")) {
+        } else if (
+          method === "PUT" &&
+          (path.endsWith("/elements/content/content") || path.endsWith("/elements/content"))
+        ) {
           if (!heldFirstWrite) {
             heldFirstWrite = true;
             firstWriteStarted.resolve();

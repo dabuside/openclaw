@@ -65,6 +65,11 @@ duplicates. `context.isNew` is `true` if and only if this admission inserted the
 delivery. If retention previously pruned the row, a later admission may insert
 it again and report `isNew: true`.
 
+For an early channel receipt, supply `replyOptions.onPreviewStart`. Core invokes
+it after run admission and applies the same visibility policy as partial previews;
+denied and message-tool-only delivery cannot emit a receipt through this callback.
+Use `onPreparedAgentRunStart` for execution ownership, rather than visible feedback.
+
 `deliver` receives `onAdopted`, `onDeferred`, `onAdoptionFinalizing`, `onFailed`,
 `onCancelled`, `onAbandoned`, and `abortSignal`. Use `onFailed` for delivery
 errors, `onCancelled` for explicit pre-adoption cancellation that must preserve

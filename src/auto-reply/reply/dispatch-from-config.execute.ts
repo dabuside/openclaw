@@ -81,6 +81,12 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
     await settlement?.settle(false);
   };
   let didDeliverVisiblePartialReply = false;
+  const onPreviewStart = wrapProgressCallback(() => {
+    if (!state.sendPolicyDenied) {
+      return params.replyOptions?.onPreviewStart?.();
+    }
+    return false;
+  });
   let replyResolverError: string | undefined;
   const pendingToolProgress = new Set<Promise<void>>();
   const {
@@ -151,10 +157,18 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
             allowWhenToolSummariesHidden:
               params.replyOptions?.allowToolLifecycleWhenProgressHidden === true,
           };
+          const replyOptions = state.getReplyOptions();
           const result = await replyResolver(
             ctx,
             {
-              ...state.getReplyOptions(),
+              ...replyOptions,
+              onPreviewStart,
+              onPreparedAgentRunStart: (start) => {
+                void onPreviewStart?.()?.catch((error: unknown) =>
+                  logVerbose(`dispatch-from-config: preview start failed: ${String(error)}`),
+                );
+                return replyOptions?.onPreparedAgentRunStart?.(start);
+              },
               preparedTtsPreferences: state.preparedTtsPreferences,
               [REPLY_OPERATION_RUN_STATE]: state.replyOperationRunState,
               sourceReplyDeliveryMode: state.sourceReplyDeliveryMode,

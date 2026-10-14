@@ -65,12 +65,15 @@ export function resolveCardHeader(
 export function resolveCardNote(
   agentId: string,
   identity: OutboundIdentity | undefined,
-  prefixCtx: { model?: string },
+  prefixCtx: { model?: string; provider?: string },
 ): string {
   const name = identity?.name?.trim() || agentId;
   const parts: string[] = [`Agent: ${name}`];
   if (prefixCtx.model) {
     parts.push(`Model: ${prefixCtx.model}`);
+  }
+  if (prefixCtx.provider) {
+    parts.push(`Provider: ${prefixCtx.provider}`);
   }
   return parts.join(" | ");
 }

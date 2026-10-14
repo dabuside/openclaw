@@ -234,7 +234,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     await delivery?.finalization;
     expect(stream(0).credentials).toMatchObject({ httpTimeoutMs: 45_000 });
     expect(stream(0).closeWithResult).toHaveBeenCalledWith("reply", {
-      note: "Agent: agent | Model: gpt-5.6-luna",
+      note: "Agent: agent | Model: gpt-5.6-luna | Provider: openai",
     });
   });
 
@@ -258,13 +258,15 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       "chat_id",
       expect.objectContaining({ messageCreateTimeMs: 1_800_000_000_000 }),
     );
-    expect(stream(0).updateNoteBase).toHaveBeenCalledWith("Agent: agent | Model: test-model");
+    expect(stream(0).updateNoteBase).toHaveBeenCalledWith(
+      "Agent: agent | Model: test-model | Provider: openai",
+    );
 
     const delivery = await options.deliver({ text: "completed answer" }, { kind: "final" });
     await options.onIdle?.();
     await delivery?.finalization;
     expect(stream(0).closeWithResult).toHaveBeenCalledWith("completed answer", {
-      note: "Agent: agent | Model: test-model",
+      note: "Agent: agent | Model: test-model | Provider: openai",
     });
   });
 

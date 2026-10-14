@@ -12,6 +12,7 @@ import {
 } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClawdbotConfig, PluginRuntime } from "../runtime-api.js";
+import { FeishuConfigSchema } from "./config-schema.js";
 import * as dedup from "./dedup.js";
 import type { FeishuMessageEvent } from "./event-types.js";
 import { createFeishuMessageReceiveHandler } from "./monitor.message-handler.js";
@@ -116,29 +117,53 @@ describe("Feishu message receive task timeout", () => {
     vi.useRealTimers();
   });
 
-  it("keeps a configured one-hour turn ahead of later same-chat messages through final delivery", async () => {
-    const queue = createQueuedMessages(3600);
-    try {
-      await vi.advanceTimersByTimeAsync(300_001);
-      expect(queue.order).toEqual(["first:start"]);
-      // Final delivery may finish after the agent's own execution deadline.
-      await vi.advanceTimersByTimeAsync(3_314_999);
-      expect(queue.order).toEqual(["first:start"]);
-      expect(queue.log).not.toHaveBeenCalled();
+  it.each([
+    {
+      name: "a configured one-hour turn",
+      configJson: '{"agents":{"defaults":{"timeoutSeconds":3600}}}',
+      remainingMs: 3_314_999,
+    },
+    {
+      name: "existing canonical settings",
+      configJson:
+        '{"agents":{"defaults":{"timeoutSeconds":600}},"channels":{"feishu":{' +
+        '"appId":"cli_fixture","appSecret":"synthetic-secret","renderMode":"card",' +
+        '"streaming":{"mode":"partial","block":{"enabled":false}},"httpTimeoutMs":30000}}}',
+      remainingMs: 314_999,
+    },
+  ])(
+    "keeps $name ahead of later same-chat messages through final delivery",
+    async ({ configJson, remainingMs }) => {
+      const cfg = JSON.parse(configJson) as ClawdbotConfig;
+      if (cfg.channels?.feishu) {
+        FeishuConfigSchema.parse(cfg.channels.feishu);
+      }
+      // Validate the saved channel settings without replacing the caller's config.
+      expect(JSON.stringify(cfg)).toBe(configJson);
+      const queue = createQueuedMessages(undefined, { cfg });
+      try {
+        await vi.advanceTimersByTimeAsync(300_001);
+        expect(queue.order).toEqual(["first:start"]);
+        // Final delivery may finish after the agent's own execution deadline.
+        await vi.advanceTimersByTimeAsync(remainingMs);
+        expect(queue.order).toEqual(["first:start"]);
+        expect(queue.log).not.toHaveBeenCalled();
 
-      await queue.finish();
+        await queue.finish();
 
-      expect(queue.order).toEqual([
-        "first:start",
-        "first:reply",
-        "follow-up:start",
-        "follow-up:reply",
-      ]);
-      expect(queue.error).not.toHaveBeenCalled();
-    } finally {
-      await queue.finish();
-    }
-  });
+        expect(queue.order).toEqual([
+          "first:start",
+          "first:reply",
+          "follow-up:start",
+          "follow-up:reply",
+        ]);
+        expect(queue.error).not.toHaveBeenCalled();
+        expect(JSON.stringify(cfg)).toBe(configJson);
+      } finally {
+        await queue.finish();
+      }
+    },
+  );
 
   it("releases a stuck configured turn after its one-hour budget and delivery grace", async () => {
     const queue = createQueuedMessages(3600);

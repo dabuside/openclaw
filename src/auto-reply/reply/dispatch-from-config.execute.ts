@@ -81,12 +81,7 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
     await settlement?.settle(false);
   };
   let didDeliverVisiblePartialReply = false;
-  const onPreviewStart = wrapProgressCallback(() => {
-    if (!state.sendPolicyDenied) {
-      return params.replyOptions?.onPreviewStart?.();
-    }
-    return false;
-  });
+  const onPreviewStart = wrapProgressCallback(params.replyOptions?.onPreviewStart);
   let replyResolverError: string | undefined;
   const pendingToolProgress = new Set<Promise<void>>();
   const {

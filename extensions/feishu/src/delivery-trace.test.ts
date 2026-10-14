@@ -505,7 +505,7 @@ describe("feishu delivery trace goldens", () => {
     expect(streamingStartBackoffUntilByAccount.has("main")).toBe(false);
   });
 
-  it("reports a rejected final body while preserving the accepted preview and closing the card", async () => {
+  it("reports a rejected final body while preserving the preview and delivering a static final", async () => {
     const recorded: RecordedWireCall[] = [];
     await expect(
       runDeliveryTraceScenario({
@@ -532,7 +532,24 @@ describe("feishu delivery trace goldens", () => {
           ),
       }),
     ).rejects.toThrow("Update card content failed with HTTP 429");
-    expect(recorded.filter((call) => call.method === "im.message.reply")).toHaveLength(1);
+    const replies = recorded.filter((call) => call.method === "im.message.reply");
+    expect(replies).toHaveLength(2);
+    expect(replies[0]).toMatchObject({
+      payload: { content: { type: "card", data: { card_id: "card-1" } } },
+    });
+    expect(replies[1]).toMatchObject({
+      payload: {
+        msg_type: "interactive",
+        content: {
+          body: {
+            elements: expect.arrayContaining([
+              expect.objectContaining({ content: "Accepted preview with final content" }),
+            ]),
+          },
+        },
+      },
+      result: { message_id: "om-2" },
+    });
     expect(recorded.find((call) => call.method.endsWith("/settings"))).toMatchObject({
       payload: {
         settings: { config: { streaming_mode: false, summary: { content: "Accepted preview" } } },

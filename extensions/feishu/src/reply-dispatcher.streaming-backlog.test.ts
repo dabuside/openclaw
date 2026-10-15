@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:https";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import {
@@ -31,6 +32,7 @@ import { PROXY_FIXTURE_CERTIFICATE, PROXY_FIXTURE_KEY } from "openclaw/plugin-sd
 import { withinTest } from "openclaw/plugin-sdk/test-fixtures";
 import { createOpenClawTestState, type OpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { convertMarkdownTables } from "openclaw/plugin-sdk/text-chunking";
+import { loadWebMedia } from "openclaw/plugin-sdk/web-media";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClawdbotConfig } from "../runtime-api.js";
 import type { FeishuReplyDeliveryResultWithFinalization } from "./reply-delivery-result.js";
@@ -41,6 +43,15 @@ type CreateBindings = typeof import("./thread-bindings.js").createFeishuThreadBi
 type DeliveryResult = NonNullable<
   Parameters<NonNullable<ChannelInboundTurnPlan["delivery"]["onDelivered"]>>[2]
 >;
+type AdmittedScenario = {
+  name: string;
+  mode: "automatic" | "message_tool_only";
+  sendPolicy: "allow" | "deny";
+  silent: boolean;
+  receipt: boolean;
+  mediaKind?: "image" | "file";
+  previewText?: string;
+};
 let createFeishuReplyDispatcher: CreateDispatcher;
 let createFeishuThreadBindingManager: CreateBindings;
 let feishuPlugin: typeof import("./channel.js").feishuPlugin;
@@ -56,7 +67,14 @@ let releaseFirstWrite = createDeferred();
 let holdFirstWrite: boolean;
 let heldFirstWrite: boolean;
 let previousCertificates: string[];
+let imagePath: string;
+let filePath: string;
 const fixtureDispatchers: ReturnType<CreateDispatcher>[] = [];
+const pngImage = Buffer.from(
+  "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de",
+  "hex",
+);
+const pdfFile = Buffer.from("%PDF-1.7\nSynthetic attachment-only reply\n%%EOF");
 
 const runtimeStore = createPluginRuntimeStore<PluginRuntime>({
   pluginId: "feishu",
@@ -84,6 +102,34 @@ function cardRequests(): WireRequest[] {
 
 function messageRequests(): WireRequest[] {
   return requests.filter((request) => request.path === "/open-apis/im/v1/messages");
+}
+
+function parseRequestBody(body: Buffer, contentType: string | undefined): Record<string, unknown> {
+  if (!contentType?.startsWith("multipart/form-data")) {
+    return JSON.parse(body.toString("utf8") || "{}") as Record<string, unknown>;
+  }
+  const boundary = contentType
+    .match(/boundary=(?:"([^"]+)"|([^;\s]+))/)
+    ?.slice(1)
+    .find(Boolean);
+  if (!boundary) {
+    throw new Error("Expected the SDK multipart boundary");
+  }
+  const fields: Record<string, unknown> = {};
+  for (const part of body.toString("latin1").split(`--${boundary}`)) {
+    const headerEnd = part.indexOf("\r\n\r\n");
+    if (headerEnd < 0) {
+      continue;
+    }
+    const headers = part.slice(0, headerEnd);
+    const name = headers.match(/(?:^|;)\s*name="([^"]+)"/m)?.[1];
+    if (!name) {
+      continue;
+    }
+    const value = part.slice(headerEnd + 4).replace(/\r\n$/, "");
+    fields[name] = /filename=/i.test(headers) ? Buffer.from(value, "latin1") : value;
+  }
+  return fields;
 }
 
 function createdCard(): { body: { elements: Array<{ element_id?: string; content?: string }> } } {
@@ -116,7 +162,15 @@ function normalizedWire(): string[] {
         return `card:create:${content?.content ?? ""}`;
       }
       if (request.path === "/open-apis/im/v1/messages") {
-        return "message:create:card-reference";
+        return request.body.msg_type === "interactive"
+          ? "message:create:card-reference"
+          : `message:create:${String(request.body.msg_type)}`;
+      }
+      if (request.path === "/open-apis/im/v1/images") {
+        return "image:upload";
+      }
+      if (request.path === "/open-apis/im/v1/files") {
+        return "file:upload";
       }
       if (request.method === "DELETE") {
         return "message:delete";
@@ -141,7 +195,12 @@ function normalizedWire(): string[] {
     });
 }
 
-function createNativeDispatcher(cfg: ClawdbotConfig, accountId: string, sessionKey?: string) {
+function createNativeDispatcher(
+  cfg: ClawdbotConfig,
+  accountId: string,
+  sessionKey?: string,
+  messageCreateTimeMs = Date.now() - 7_000,
+) {
   const errors: string[] = [];
   const dispatcher = createFeishuReplyDispatcher({
     cfg,
@@ -150,7 +209,7 @@ function createNativeDispatcher(cfg: ClawdbotConfig, accountId: string, sessionK
     sendTarget: "oc_owned_chat",
     sessionKey,
     accountId,
-    messageCreateTimeMs: Date.now() - 7_000,
+    messageCreateTimeMs,
     runtime: {
       log: (message) => {
         if (!heldFirstWrite && String(message).includes("Update failed:")) {
@@ -203,8 +262,12 @@ beforeAll(async () => {
   ({ createFeishuThreadBindingManager } = await import("./thread-bindings.js"));
   ({ feishuPlugin } = await import("./channel.js"));
   state = await createOpenClawTestState({ label: "feishu-core-streaming" });
+  filePath = await state.writeText("media/attachment.pdf", pdfFile.toString("utf8"));
+  imagePath = state.statePath("media", "attachment.png");
+  await writeFile(imagePath, pngImage);
   previousRuntime = runtimeStore.tryGetRuntime();
   const runtime = createPluginRuntimeMock();
+  runtime.media.loadWebMedia = loadWebMedia;
   Object.assign(runtime.channel.text, {
     resolveTextChunkLimit,
     resolveChunkMode,
@@ -231,10 +294,7 @@ beforeAll(async () => {
         for await (const chunk of request) {
           chunks.push(Buffer.from(chunk));
         }
-        const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as Record<
-          string,
-          unknown
-        >;
+        const body = parseRequestBody(Buffer.concat(chunks), request.headers["content-type"]);
         const url = new URL(request.url ?? "/", "https://127.0.0.1");
         const wire: WireRequest = {
           method: request.method ?? "GET",
@@ -249,8 +309,39 @@ beforeAll(async () => {
         } else if (wire.method === "POST" && wire.path === "/open-apis/cardkit/v1/cards") {
           result = { code: 0, data: { card_id: "owned-card" } };
         } else if (wire.method === "POST" && wire.path === "/open-apis/im/v1/messages") {
-          result = { code: 0, data: { message_id: "om_owned_stream", chat_id: "oc_owned_chat" } };
-          receiptSent.resolve();
+          const type = body.msg_type;
+          if (type !== "interactive" && type !== "image" && type !== "file") {
+            throw new Error(`Unexpected native message type: ${String(type)}`);
+          }
+          result = {
+            code: 0,
+            data: {
+              message_id: type === "interactive" ? "om_owned_stream" : `om_owned_${type}`,
+              chat_id: "oc_owned_chat",
+            },
+          };
+          if (type === "interactive") {
+            receiptSent.resolve();
+          }
+        } else if (wire.method === "POST" && wire.path === "/open-apis/im/v1/images") {
+          if (
+            body.image_type !== "message" ||
+            !Buffer.isBuffer(body.image) ||
+            !body.image.equals(pngImage)
+          ) {
+            throw new Error("Native image upload did not contain the synthetic PNG bytes");
+          }
+          result = { code: 0, data: { image_key: "image_owned_attachment" } };
+        } else if (wire.method === "POST" && wire.path === "/open-apis/im/v1/files") {
+          if (
+            body.file_type !== "pdf" ||
+            body.file_name !== "attachment.pdf" ||
+            !Buffer.isBuffer(body.file) ||
+            !body.file.equals(pdfFile)
+          ) {
+            throw new Error("Native file upload did not contain the synthetic PDF bytes");
+          }
+          result = { code: 0, data: { file_key: "file_owned_attachment" } };
         } else if (isContentWrite(wire)) {
           if (holdFirstWrite && !heldFirstWrite) {
             heldFirstWrite = true;
@@ -399,7 +490,7 @@ describe("Feishu streaming dispatcher with delayed native CardKit writes", () =>
 });
 
 describe("Feishu receipt through core admission and native HTTPS", () => {
-  it.for([
+  it.for<AdmittedScenario>([
     { name: "automatic", mode: "automatic", sendPolicy: "allow", silent: false, receipt: true },
     { name: "denied", mode: "automatic", sendPolicy: "deny", silent: false, receipt: false },
     {
@@ -410,14 +501,46 @@ describe("Feishu receipt through core admission and native HTTPS", () => {
       receipt: false,
     },
     { name: "silent", mode: "automatic", sendPolicy: "allow", silent: true, receipt: true },
-  ] as const)(
+    {
+      name: "image-only final",
+      mode: "automatic",
+      sendPolicy: "allow",
+      silent: false,
+      receipt: true,
+      mediaKind: "image",
+    },
+    {
+      name: "file-only final",
+      mode: "automatic",
+      sendPolicy: "allow",
+      silent: false,
+      receipt: true,
+      mediaKind: "file",
+    },
+    {
+      name: "accepted preview and image-only final",
+      mode: "automatic",
+      sendPolicy: "allow",
+      silent: false,
+      receipt: true,
+      mediaKind: "image",
+      previewText: "Accepted preview with attachment",
+    },
+  ])(
     "settles $name source delivery through the submitted callback path",
     async (scenario, { signal }) => {
       const accountId = `admission-${randomUUID()}`;
       const sessionKey = `agent:main:feishu:group:${accountId}`;
       const cfg = createConfig(accountId, scenario.sendPolicy);
       const bindings = createFeishuThreadBindingManager({ cfg, accountId });
-      const { dispatcher, errors } = createNativeDispatcher(cfg, accountId, sessionKey);
+      // Cover the event's seconds form on an existing case; other cases use milliseconds.
+      const messageTime = scenario.silent ? (Date.now() - 7_000) / 1_000 : Date.now() - 7_000;
+      const { dispatcher, errors } = createNativeDispatcher(
+        cfg,
+        accountId,
+        sessionKey,
+        messageTime,
+      );
       const delivered: DeliveryResult[] = [];
       const ownership = vi.fn(() => "reply-dispatch");
       let sawReceiptBeforeOutput = false;
@@ -482,9 +605,27 @@ describe("Feishu receipt through core admission and native HTTPS", () => {
                 content: "Received, processing…",
               });
               expect(contentWrites()).toEqual([]);
+              const initialNote = createdCard().body.elements.find(
+                ({ element_id }) => element_id === "note",
+              )?.content;
+              expect(initialNote).toMatch(/Model: fixture-model \| Provider: synthetic ⏱ \d+\.\ds/);
+              if (scenario.name === "automatic") {
+                // Model selection may change after the early receipt, as with a fallback candidate.
+                options?.onModelSelected?.({
+                  provider: "synthetic",
+                  model: "selected-fixture-model",
+                  thinkLevel: "off",
+                });
+              }
             } else {
               expect(cardRequests()).toHaveLength(0);
               expect(messageRequests()).toHaveLength(0);
+            }
+            if (scenario.mediaKind) {
+              if (scenario.previewText) {
+                await options?.onPartialReply?.({ text: scenario.previewText });
+              }
+              return { mediaUrl: scenario.mediaKind === "image" ? imagePath : filePath };
             }
             if (!scenario.silent) {
               await options?.onPartialReply?.({ text: "Final answer" });
@@ -522,6 +663,42 @@ describe("Feishu receipt through core admission and native HTTPS", () => {
         expect(result.dispatchResult.settledReceipt?.anyVisibleDelivered).toBe(false);
         return;
       }
+      if (scenario.mediaKind) {
+        const attachmentId = `om_owned_${scenario.mediaKind}`;
+        const attachment = messageRequests().find(
+          ({ body }) => body.msg_type === scenario.mediaKind,
+        );
+        expect(attachment?.body).toMatchObject({
+          receive_id: "oc_owned_chat",
+          msg_type: scenario.mediaKind,
+          content: JSON.stringify(
+            scenario.mediaKind === "image"
+              ? { image_key: "image_owned_attachment" }
+              : { file_key: "file_owned_attachment" },
+          ),
+        });
+        expect(result.dispatchResult.settledReceipt?.anyVisibleDelivered).toBe(true);
+        expect(result.dispatchResult.settledReceipt?.counts.final.delivered).toBe(1);
+        expect(delivered).toContainEqual(
+          expect.objectContaining({
+            visibleReplySent: true,
+            receipt: expect.objectContaining({ primaryPlatformMessageId: attachmentId }),
+          }),
+        );
+        expect(messageRequests()).toHaveLength(2);
+        if (scenario.previewText) {
+          expect(requests.filter(({ method }) => method === "DELETE")).toEqual([]);
+          expect(contentWrites()).toEqual([scenario.previewText]);
+          expectClosed(scenario.previewText);
+        } else {
+          expect(requests.filter(({ method }) => method === "DELETE")).toMatchObject([
+            { path: "/open-apis/im/v1/messages/om_owned_stream" },
+          ]);
+          expect(contentWrites()).toEqual([]);
+          expect(requests.filter(({ path }) => path.endsWith("/settings"))).toEqual([]);
+        }
+        return;
+      }
       expect(messageRequests()).toHaveLength(1);
       if (scenario.silent) {
         expect(contentWrites()).toEqual([]);
@@ -534,6 +711,9 @@ describe("Feishu receipt through core admission and native HTTPS", () => {
       }
       expect(contentWrites()).toEqual(["Final answer"]);
       expectClosed("Final answer");
+      expect(
+        requests.findLast(({ path }) => path.endsWith("/elements/note/content"))?.body.content,
+      ).toMatch(/Model: selected-fixture-model \| Provider: synthetic ⏱ \d+\.\ds/);
       expect(result.dispatchResult.settledReceipt?.anyVisibleDelivered).toBe(true);
       expect(result.dispatchResult.settledReceipt?.counts.final.delivered).toBe(1);
       expect(delivered).toContainEqual(

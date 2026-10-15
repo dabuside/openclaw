@@ -482,7 +482,8 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
           if (
             disposition === "discarded" ||
             (!text.trim() &&
-              (replyOutcome?.kind === "suppressed" ||
+              (visibleReplySent ||
+                replyOutcome?.kind === "suppressed" ||
                 (replyOutcome?.kind === "skipped" && replyOutcome.reason === "silent")))
           ) {
             closed = await streamingToClose.discard();

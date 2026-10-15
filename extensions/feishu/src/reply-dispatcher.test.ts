@@ -238,48 +238,6 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     });
   });
 
-  it("starts an auto-mode receipt on agent admission and refreshes the selected model", async () => {
-    const { result, options } = createDispatcherHarness({ messageCreateTimeMs: 1_800_000_000_000 });
-    expect(streamingInstances).toHaveLength(0);
-
-    result.replyOptions.onPreviewStart?.();
-    result.replyOptions.onPreviewStart?.();
-    result.replyOptions.onModelSelected?.({
-      provider: "openai",
-      model: "test-model",
-      thinkLevel: "off",
-    });
-    await options.onReplyStart?.();
-
-    expect(streamingInstances).toHaveLength(1);
-    expect(stream(0).start).toHaveBeenCalledTimes(1);
-    expect(stream(0).start).toHaveBeenCalledWith(
-      "oc_chat",
-      "chat_id",
-      expect.objectContaining({ messageCreateTimeMs: 1_800_000_000_000 }),
-    );
-    expect(stream(0).updateNoteBase).toHaveBeenCalledWith(
-      "Agent: agent | Model: test-model | Provider: openai",
-    );
-
-    const delivery = await options.deliver({ text: "completed answer" }, { kind: "final" });
-    await options.onIdle?.();
-    await delivery?.finalization;
-    expect(stream(0).closeWithResult).toHaveBeenCalledWith("completed answer", {
-      note: "Agent: agent | Model: test-model | Provider: openai",
-    });
-  });
-
-  it("discards an admitted receipt when the final reply is silent", async () => {
-    const { result, options } = createDispatcherHarness();
-    result.replyOptions.onPreviewStart?.();
-    await options.onReplyStart?.();
-    options.onSkip?.({}, { kind: "final", reason: "silent" });
-    await options.onIdle?.();
-    expect(stream(0).discard).toHaveBeenCalledTimes(1);
-    expect(stream(0).closeWithResult).not.toHaveBeenCalled();
-  });
-
   it.each(["reply_payload_sending", "message_sending"])(
     "suppresses all pre-hook CardKit previews when %s is registered",
     async (hookName) => {

@@ -83,8 +83,11 @@ with `renderMode: "auto"`. After the first preview, body updates coalesce to the
 latest text at most once every five seconds; finalization sends the complete
 answer immediately. The footer preserves the agent, selected model, and provider,
 and adds elapsed time from the incoming message timestamp, refreshing every five
-seconds while the card is active. Silent replies discard their receipt card. Message hooks that
-can rewrite or suppress a reply continue to disable early previews.
+seconds while the card is active. Silent replies discard their receipt card.
+Successful attachment-only replies also discard an unused receipt, preserving
+any answer text already accepted by the streaming card and the attachment's
+delivery receipt. Message hooks that can rewrite or suppress a reply continue to
+disable early previews.
 
 For long tasks, the per-chat queue honors an explicitly configured
 `agents.defaults.timeoutSeconds`. Its watchdog reserves one configured Feishu HTTP
